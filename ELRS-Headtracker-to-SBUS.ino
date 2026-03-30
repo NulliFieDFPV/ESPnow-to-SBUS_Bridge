@@ -24,7 +24,7 @@
 #define BINDING_PHRASE   "BINDPHRASE"  // Must match your ELRS / Backpack setup
 #define PTR_CH_START     1                   // First channel for Pan (Tilt=CH2, Roll=CH3)
 #define DEBUG_MODE                         // Uncomment to enable Serial debug output
-
+#define ESP_NUM_CH       3
 // ======================== PIN ASSIGNMENT =============================
 #define SBUS_TX_PIN      14                   // Serial1 TX GPIO for SBUS output, select any pin
 
@@ -50,7 +50,7 @@ MspParser msp;
 
 // Written from ESP-NOW callback, read from loop — guarded by ptrMux
 portMUX_TYPE ptrMux = portMUX_INITIALIZER_UNLOCKED;
-volatile uint16_t ptrCh[3];
+volatile uint16_t ptrCh[ESP_NUM_CH];
 volatile uint32_t lastPtrMs;
 volatile bool     sendHTEnable;   // Flag: VRx requested cached packets
 volatile uint32_t ptrPacketCount; // Total PTR packets received
@@ -116,6 +116,24 @@ void onEspNowRecv(const esp_now_recv_info_t *info,
     }
 }
 
+//filtering outputs
+void sanitizeCh(uint16_t *localPtr) {
+    
+    int base = PTR_CH_START - 1;
+
+    for (int i = 0; i < ESP_NUM_CH; i++) {
+        if (localPtr[i] < CRSF_CHANNEL_MIN) { localPtr[i]=CRSF_CHANNEL_MIN;}
+        if (localPtr[i] > CRSF_CHANNEL_MAX) { localPtr[i]=CRSF_CHANNEL_MAX;}
+
+        if (channels[base + i] == CRSF_CHANNEL_MIN && localPtr[i] == CRSF_CHANNEL_MAX) {
+            localPtr[i] = CRSF_CHANNEL_MIN;
+        }
+        if (channels[base + i] == CRSF_CHANNEL_MAX && localPtr[i] == CRSF_CHANNEL_MIN) {
+            localPtr[i] = CRSF_CHANNEL_MAX;
+        }
+    }    
+}
+
 // ======================== SETUP ======================================
 void setup() {
     DBG_INIT();
@@ -177,7 +195,7 @@ void loop() {
     portEXIT_CRITICAL(&ptrMux);
 
     // Periodically send enable until we receive PTR data
-    bool active = localPtrMs > 0 && (now - localPtrMs) < PTR_TIMEOUT_MS;
+    bool active = localPtrMs > 0 && ((now - localPtrMs) < PTR_TIMEOUT_MS || localPtrMs > now);
     if (!active && (now - lastEnableMs >= 1000)) {
         sendHeadTrackingEnable();
         lastEnableMs = now;
@@ -198,6 +216,7 @@ void loop() {
 
         if (active) {
             int base = PTR_CH_START - 1;
+            sanitizeCh(localPtr);
             channels[base + 0] = localPtr[0];
             channels[base + 1] = localPtr[1];
             channels[base + 2] = localPtr[2];
