@@ -22,7 +22,7 @@ In Arduino IDE, go to **File > Preferences** and add the ESP32 board manager URL
 
 ### 2. Configure the Sketch
 
-Open `ELRS-Headtracker-to-SBUS.ino` and edit the options at the top:
+Open `ESPnow-to-SBUS_Bridge.ino` and edit the options at the top:
 
 ```cpp
 #define WIFI_SSID        "XXXXXXXXXX"  // Of you local network for OTA updates
