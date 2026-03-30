@@ -1,6 +1,4 @@
 /*
-based on https://github.com/jlpoltrack/ELRS-Headtracker-to-SBUS
-
  * ELRS Head Tracker -> SBUS Bridge
  *
  * Emulates an ELRS Backpack to receive MSP_ELRS_BACKPACK_SET_PTR
@@ -14,6 +12,9 @@ based on https://github.com/jlpoltrack/ELRS-Headtracker-to-SBUS
  *   github.com/ExpressLRS/Backpack   (ESP-NOW + MSP framing)
  *   github.com/ExpressLRS/ExpressLRS (SBUS output + CRSF channel encoding)
  */
+#include <ESPmDNS.h>
+#include <NetworkUdp.h>
+#include <ArduinoOTA.h>
 
 #include <WiFi.h>
 #include <esp_now.h>
@@ -23,12 +24,14 @@ based on https://github.com/jlpoltrack/ELRS-Headtracker-to-SBUS
 #include "sbus.h"
 
 // ======================== OPTIONS ====================================
-#define BINDING_PHRASE   "BINDPHRASE"  // Must match your ELRS / Backpack setup
+#define WIFI_SSID        "XXXXXXXXXXXXX"
+#define WIFI_PASS        "XXXXXXXXXXXXX"
+#define BINDING_PHRASE   "XXXXXXXXXXXXX"  // Must match your ELRS / Backpack setup
 #define PTR_CH_START     1                   // First channel for Pan (Tilt=CH2, Roll=CH3)
 #define DEBUG_MODE                         // Uncomment to enable Serial debug output
 #define ESP_NUM_CH       3
 // ======================== PIN ASSIGNMENT =============================
-#define SBUS_TX_PIN      14                   // Serial1 TX GPIO for SBUS output, select any pin
+#define SBUS_TX_PIN      21                   // Serial1 TX GPIO for SBUS output, select any pin
 
 static_assert(PTR_CH_START >= 1 && PTR_CH_START <= 14, "PTR_CH_START must be 1-14 (needs 3 channels)");
 
@@ -50,6 +53,8 @@ uint8_t  uid[6];
 uint16_t channels[SBUS_NUM_CHANNELS];
 MspParser msp;
 
+uint32_t last_ota_time = 0;
+
 // Written from ESP-NOW callback, read from loop — guarded by ptrMux
 portMUX_TYPE ptrMux = portMUX_INITIALIZER_UNLOCKED;
 volatile uint16_t ptrCh[ESP_NUM_CH];
@@ -59,6 +64,7 @@ volatile uint32_t ptrPacketCount; // Total PTR packets received
 uint32_t lastSbusMs;
 uint32_t lastEnableMs;
 bool     wasActive;
+bool     progressUpdate = false;
 
 // ======================== UID FROM BINDING PHRASE ====================
 // Replicates ELRS build system: MD5('-DMY_BINDING_PHRASE="<phrase>"')[0:6]
@@ -91,6 +97,25 @@ void sendHeadTrackingEnable() {
     DBG("Sent SET_HEAD_TRACKING enable\n");
 }
 
+void sanitizeCh(uint16_t *localPtr) {
+    
+    int base = PTR_CH_START - 1;
+
+    for (int i = 0; i < ESP_NUM_CH; i++) {
+        if (localPtr[i] < CRSF_CHANNEL_MIN) { localPtr[i]=CRSF_CHANNEL_MIN;}
+        if (localPtr[i] > CRSF_CHANNEL_MAX) { localPtr[i]=CRSF_CHANNEL_MAX;}
+
+        if (channels[base + i] == CRSF_CHANNEL_MIN && localPtr[i] == CRSF_CHANNEL_MAX) {
+            localPtr[i] = CRSF_CHANNEL_MIN;
+        }
+        if (channels[base + i] == CRSF_CHANNEL_MAX && localPtr[i] == CRSF_CHANNEL_MIN) {
+            localPtr[i] = CRSF_CHANNEL_MAX;
+        }
+
+    }    
+}
+
+
 // ======================== ESP-NOW RECEIVE CALLBACK ===================
 void onEspNowRecv(const esp_now_recv_info_t *info,
                          const uint8_t *data, int len) {
@@ -108,7 +133,8 @@ void onEspNowRecv(const esp_now_recv_info_t *info,
                 ptrCh[2] = min(msp.payloadU16(4), (uint16_t)2047);  // Roll
                 lastPtrMs = millis();
                 portEXIT_CRITICAL(&ptrMux);
-                ptrPacketCount++;
+                ptrPacketCount+1;
+
             }
             else if (msp.function == MSP_ELRS_REQU_VTX_PKT) {
                 sendHTEnable = true;
@@ -118,28 +144,25 @@ void onEspNowRecv(const esp_now_recv_info_t *info,
     }
 }
 
-//filtering outputs
-void sanitizeCh(uint16_t *localPtr) {
-    
-    int base = PTR_CH_START - 1;
-
-    for (int i = 0; i < ESP_NUM_CH; i++) {
-        if (localPtr[i] < CRSF_CHANNEL_MIN) { localPtr[i]=CRSF_CHANNEL_MIN;}
-        if (localPtr[i] > CRSF_CHANNEL_MAX) { localPtr[i]=CRSF_CHANNEL_MAX;}
-
-        if (channels[base + i] == CRSF_CHANNEL_MIN && localPtr[i] == CRSF_CHANNEL_MAX) {
-            localPtr[i] = CRSF_CHANNEL_MIN;
-        }
-        if (channels[base + i] == CRSF_CHANNEL_MAX && localPtr[i] == CRSF_CHANNEL_MIN) {
-            localPtr[i] = CRSF_CHANNEL_MAX;
-        }
-    }    
-}
-
 // ======================== SETUP ======================================
 void setup() {
     DBG_INIT();
-    DBG("\nELRS Head Tracker -> SBUS Bridge\n");
+    DBG("\nESPnow -> SBUS Bridge\n");
+    uint32_t startSetup = millis();
+
+    //OTA Client for 120s
+    setupOta();
+    bool handleUpdate = true;
+    while (handleUpdate) {
+        ArduinoOTA.handle();
+        if (millis() - startSetup > 120000) {
+            if (!progressUpdate) {
+                handleUpdate = false;
+            }
+            
+        }
+    }
+    WiFi.disconnect();
 
     generateUID(BINDING_PHRASE, uid);
     DBG("UID: %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -151,20 +174,7 @@ void setup() {
     // SBUS output on Serial1 — 100 kbaud, 8E2, non-inverted (idle-high), TX-only
     Serial1.begin(100000, SERIAL_8E2, -1, SBUS_TX_PIN, false);
 
-    // WiFi STA mode for ESP-NOW on channel 1 (hardcoded in all Backpack modules)
-    WiFi.mode(WIFI_STA);
-    WiFi.setTxPower(WIFI_POWER_8_5dBm);  // ~7 mW — plenty for short-range backpack link
-    esp_wifi_set_protocol(WIFI_IF_STA,
-        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
-    WiFi.begin("", "", 1);
-    WiFi.disconnect();
-
-    esp_wifi_set_mac(WIFI_IF_STA, uid);
-
-    if (esp_now_init() != ESP_OK) {
-        DBG("ESP-NOW init failed — restarting\n");
-        ESP.restart();
-    }
+    setupEspnow();
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, uid, 6);
@@ -179,8 +189,10 @@ void setup() {
     DBG("Waiting for head tracker...\n");
 }
 
+
 // ======================== LOOP =======================================
 void loop() {
+
     uint32_t now = millis();
 
     // Respond to VRx requesting cached packets
@@ -208,8 +220,9 @@ void loop() {
         wasActive = active;
         if (active)
             DBG("Head tracker connected (packets: %lu)\n", ptrPacketCount);
-        else if (localPtrMs > 0)
-            DBG("Head tracker lost — failsafe (last packet %lums ago)\n", now - localPtrMs);
+        else if (localPtrMs > 0) {
+            DBG("Head tracker lost — failsafe (last packet %lums ago)\n", (now - localPtrMs));
+            }
     }
 
     // SBUS output
@@ -218,13 +231,99 @@ void loop() {
 
         if (active) {
             int base = PTR_CH_START - 1;
+            
             sanitizeCh(localPtr);
+
             channels[base + 0] = localPtr[0];
             channels[base + 1] = localPtr[1];
             channels[base + 2] = localPtr[2];
+
+            DBG("Ch0 %u ", channels[0]);
+            DBG("Ch1 %u ", channels[1]);
+            DBG("Ch2 %u ", channels[2]);
+            DBG("Ch3 %u\n", channels[3]);
+
         }
 
         uint8_t flags = active ? 0 : (SBUS_FLAG_SIGLOSS | SBUS_FLAG_FAILSAFE);
         sbusWrite(Serial1, channels, flags);
     }
+}
+
+
+void setupEspnow() {
+        // WiFi STA mode for ESP-NOW on channel 1 (hardcoded in all Backpack modules)
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);  // ~7 mW — plenty for short-range backpack link
+    esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+    WiFi.begin("", "", 1);
+    WiFi.disconnect();
+
+    esp_wifi_set_mac(WIFI_IF_STA, uid);
+
+    if (esp_now_init() != ESP_OK) {
+        DBG("ESP-NOW init failed — restarting\n");
+        ESP.restart();
+    }
+
+}
+
+void setupOta() {
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    DBG("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
+  }
+
+
+  ArduinoOTA.setHostname("espnow-bridge");
+  ArduinoOTA.setPassword("admin");
+
+  ArduinoOTA
+    .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH) {
+        type = "sketch";
+      } else {  // U_SPIFFS
+        type = "filesystem";
+      }
+      progressUpdate = true;
+    })
+    .onEnd([]() {
+      progressUpdate = false;
+      DBG("\nEnd");
+
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      if (millis() - last_ota_time > 500) {
+        DBG("Progress: %u%%\n", (progress / (total / 100)));
+        last_ota_time = millis();
+      }
+      progressUpdate = true;
+    })
+    .onError([](ota_error_t error) {
+      DBG("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) {
+        DBG("Auth Failed");
+      } else if (error == OTA_BEGIN_ERROR) {
+        DBG("Begin Failed");
+      } else if (error == OTA_CONNECT_ERROR) {
+        DBG("Connect Failed");
+      } else if (error == OTA_RECEIVE_ERROR) {
+        DBG("Receive Failed");
+      } else if (error == OTA_END_ERROR) {
+        DBG("End Failed");
+      }
+    });
+
+  ArduinoOTA.begin();
+
+  DBG("Ready\n");
+  Serial.print(WiFi.localIP());
+
 }
