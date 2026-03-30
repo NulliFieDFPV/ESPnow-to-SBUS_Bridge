@@ -24,11 +24,11 @@
 #include "sbus.h"
 
 // ======================== OPTIONS ====================================
-#define WIFI_SSID        "XXXXXXXXXXXXX"
-#define WIFI_PASS        "XXXXXXXXXXXXX"
-#define BINDING_PHRASE   "XXXXXXXXXXXXX"  // Must match your ELRS / Backpack setup
+#define WIFI_SSID        "XXXXXXXXXXXXX"      //your local network for OTA updates
+#define WIFI_PASS        "XXXXXXXXXXXXX"      //your local network password for OTA updates
+#define BINDING_PHRASE   "XXXXXXXXXXXXX"     // Must match your ELRS / Backpack setup
 #define PTR_CH_START     1                   // First channel for Pan (Tilt=CH2, Roll=CH3)
-#define DEBUG_MODE                         // Uncomment to enable Serial debug output
+//#define DEBUG_MODE                           // Uncomment to enable Serial debug output
 #define ESP_NUM_CH       3
 // ======================== PIN ASSIGNMENT =============================
 #define SBUS_TX_PIN      21                   // Serial1 TX GPIO for SBUS output, select any pin
