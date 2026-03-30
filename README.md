@@ -1,4 +1,4 @@
-# ELRS Head Tracker to SBUS Bridge
+# ESPnow to SBUS Bridge
 
 An ESP32 Arduino sketch that acts as an ELRS Backpack receiver, capturing head tracking data (pan/tilt/roll) sent via ESP-NOW from a VRx module and outputting it as a standard SBUS stream. This allows one to use Googles that support head tracking (e.g. HDZero) with radio links other than ELRS.
 
@@ -57,7 +57,7 @@ Connect the `SBUS_TX_PIN` GPIO to the Rx pin of the Aux port on your radio.
 
 
 
-# Origninal
+# Original
 
 # ELRS Head Tracker to SBUS Bridge
 
