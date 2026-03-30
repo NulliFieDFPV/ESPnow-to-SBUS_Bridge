@@ -1,4 +1,6 @@
 /*
+based on https://github.com/jlpoltrack/ELRS-Headtracker-to-SBUS
+
  * ELRS Head Tracker -> SBUS Bridge
  *
  * Emulates an ELRS Backpack to receive MSP_ELRS_BACKPACK_SET_PTR
