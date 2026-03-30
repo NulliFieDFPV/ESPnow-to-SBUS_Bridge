@@ -50,7 +50,7 @@ MspParser msp;
 
 // Written from ESP-NOW callback, read from loop — guarded by ptrMux
 portMUX_TYPE ptrMux = portMUX_INITIALIZER_UNLOCKED;
-volatile uint16_t ptrCh[3];
+volatile uint16_t ptrCh[ESP_NUM_CH];
 volatile uint32_t lastPtrMs;
 volatile bool     sendHTEnable;   // Flag: VRx requested cached packets
 volatile uint32_t ptrPacketCount; // Total PTR packets received
